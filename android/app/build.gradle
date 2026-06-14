@@ -32,7 +32,7 @@ def releaseSigning = [
 def hasReleaseSigning = releaseSigning.values().every { it != null && !it.isBlank() }
 
 android {
-    namespace = "io.github.strikerx3.ymir.android"
+    namespace = "com.ymir.android"
     compileSdk = rootProject.ext.compileSdkVersion
     ndkVersion = rootProject.ext.ndkVersion
 
@@ -48,7 +48,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "io.github.strikerx3.ymir.android"
+        applicationId = "com.ymir.android"
         minSdk = rootProject.ext.minSdkVersion
         targetSdk = rootProject.ext.targetSdkVersion
         versionCode = 1

@@ -1,11 +1,13 @@
-package io.github.strikerx3.ymir.android;
+package com.ymir.android;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.SharedPreferences;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -22,6 +24,8 @@ import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -117,6 +121,7 @@ public final class MainActivity extends Activity {
     private boolean bezelIndexBuilt;
     private boolean setupWizardWaitingForFolder;
     private boolean debugInfoVisible;
+    private OnBackInvokedCallback backInvokedCallback;
     private final Map<String, Uri> bezelExactIndex = new HashMap<>();
     private final Map<String, Uri> bezelLooseIndex = new HashMap<>();
     private final List<BezelLibraryEntry> bezelLibrary = new ArrayList<>();
@@ -176,6 +181,7 @@ public final class MainActivity extends Activity {
         setContentView(createContentView());
         applyDisplayPreferences(false);
         restoreStartupSettings();
+        registerBackHandler();
         uiHandler.post(fpsUpdater);
         showPlayBarTemporarily();
     }
@@ -191,6 +197,7 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        unregisterBackHandler();
         if (nativeHandle != 0) {
             uiHandler.removeCallbacks(fpsUpdater);
             uiHandler.removeCallbacks(hidePlayBarRunnable);
@@ -203,18 +210,47 @@ public final class MainActivity extends Activity {
         super.onDestroy();
     }
 
+    @SuppressLint("GestureBackNavigation")
     @Override
     public void onBackPressed() {
+        if (handleBackNavigation()) {
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    private void registerBackHandler() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return;
+        }
+        backInvokedCallback = () -> {
+            if (!handleBackNavigation()) {
+                finish();
+            }
+        };
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT, backInvokedCallback);
+    }
+
+    private void unregisterBackHandler() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || backInvokedCallback == null) {
+            return;
+        }
+        getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backInvokedCallback);
+        backInvokedCallback = null;
+    }
+
+    private boolean handleBackNavigation() {
         if (gameLibraryScreen != null && gameLibraryScreen.getVisibility() == View.VISIBLE) {
             closeGameLibraryScreen();
-            return;
+            return true;
         }
         if (settingsPanel != null && settingsPanel.getVisibility() == View.VISIBLE) {
             settingsPanel.setVisibility(View.GONE);
             showPlayBarTemporarily();
-            return;
+            return true;
         }
-        super.onBackPressed();
+        return false;
     }
 
     @Override
@@ -1627,9 +1663,13 @@ public final class MainActivity extends Activity {
             return;
         }
         if (requestCode == REQUEST_PICK_GAMES_FOLDER) {
-            int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-            getContentResolver().takePersistableUriPermission(uri, flags);
+            int flags = data.getFlags();
+            if ((flags & Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0) {
+                getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            }
+            if ((flags & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0) {
+                getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            }
             String value = uri.toString();
             gamesFolderUri = uri;
             bezelFolderUri = uri;

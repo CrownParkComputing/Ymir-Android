@@ -1,4 +1,4 @@
-package io.github.strikerx3.ymir.android;
+package com.ymir.android;
 
 import android.content.Context;
 import android.graphics.Bitmap;
