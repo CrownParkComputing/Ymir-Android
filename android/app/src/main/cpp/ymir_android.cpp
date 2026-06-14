@@ -1683,22 +1683,22 @@ jstring ToJString(JNIEnv *env, const std::string &value) {
 } // namespace
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_ymir_android_YmirNative_coreInfo(JNIEnv *env, jclass) {
+Java_com_saturn_1emu_android_YmirNative_coreInfo(JNIEnv *env, jclass) {
     return ToJString(env, std::string{"Ymir "} + Ymir_VERSION);
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_ymir_android_YmirNative_create(JNIEnv *, jclass) {
+Java_com_saturn_1emu_android_YmirNative_create(JNIEnv *, jclass) {
     return reinterpret_cast<jlong>(new AndroidYmirRuntime());
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_destroy(JNIEnv *, jclass, jlong handle) {
+Java_com_saturn_1emu_android_YmirNative_destroy(JNIEnv *, jclass, jlong handle) {
     delete FromHandle(handle);
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_setSurface(JNIEnv *env, jclass, jlong handle, jobject surface) {
+Java_com_saturn_1emu_android_YmirNative_setSurface(JNIEnv *env, jclass, jlong handle, jobject surface) {
     auto *runtime = FromHandle(handle);
     if (runtime == nullptr || surface == nullptr) {
         return;
@@ -1707,7 +1707,7 @@ Java_com_ymir_android_YmirNative_setSurface(JNIEnv *env, jclass, jlong handle, j
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_setSurfaceSize(JNIEnv *, jclass, jlong handle, jint width,
+Java_com_saturn_1emu_android_YmirNative_setSurfaceSize(JNIEnv *, jclass, jlong handle, jint width,
                                                                 jint height) {
     if (auto *runtime = FromHandle(handle)) {
         runtime->SetSurfaceSize(width, height);
@@ -1715,21 +1715,21 @@ Java_com_ymir_android_YmirNative_setSurfaceSize(JNIEnv *, jclass, jlong handle, 
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_clearSurface(JNIEnv *, jclass, jlong handle) {
+Java_com_saturn_1emu_android_YmirNative_clearSurface(JNIEnv *, jclass, jlong handle) {
     if (auto *runtime = FromHandle(handle)) {
         runtime->ClearSurface();
     }
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_setRendererBackend(JNIEnv *, jclass, jlong handle, jint backend) {
+Java_com_saturn_1emu_android_YmirNative_setRendererBackend(JNIEnv *, jclass, jlong handle, jint backend) {
     if (auto *runtime = FromHandle(handle)) {
         runtime->SetRendererBackend(static_cast<RendererBackend>(backend));
     }
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_setDisplayOptions(JNIEnv *, jclass, jlong handle, jint aspectMode,
+Java_com_saturn_1emu_android_YmirNative_setDisplayOptions(JNIEnv *, jclass, jlong handle, jint aspectMode,
                                                                    jboolean bezelEnabled, jboolean crtEnabled,
                                                                    jboolean cropEnabled) {
     if (auto *runtime = FromHandle(handle)) {
@@ -1739,7 +1739,7 @@ Java_com_ymir_android_YmirNative_setDisplayOptions(JNIEnv *, jclass, jlong handl
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_setPresentationPaused(JNIEnv *, jclass, jlong handle,
+Java_com_saturn_1emu_android_YmirNative_setPresentationPaused(JNIEnv *, jclass, jlong handle,
                                                                        jboolean paused) {
     if (auto *runtime = FromHandle(handle)) {
         runtime->SetPresentationPaused(paused == JNI_TRUE);
@@ -1747,14 +1747,14 @@ Java_com_ymir_android_YmirNative_setPresentationPaused(JNIEnv *, jclass, jlong h
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_setAudioMuted(JNIEnv *, jclass, jlong handle, jboolean muted) {
+Java_com_saturn_1emu_android_YmirNative_setAudioMuted(JNIEnv *, jclass, jlong handle, jboolean muted) {
     if (auto *runtime = FromHandle(handle)) {
         runtime->SetAudioMuted(muted == JNI_TRUE);
     }
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_setCustomVulkanDriverPath(JNIEnv *env, jclass, jlong handle,
+Java_com_saturn_1emu_android_YmirNative_setCustomVulkanDriverPath(JNIEnv *env, jclass, jlong handle,
                                                                            jstring path) {
     auto *runtime = FromHandle(handle);
     if (runtime == nullptr || path == nullptr) {
@@ -1768,7 +1768,7 @@ Java_com_ymir_android_YmirNative_setCustomVulkanDriverPath(JNIEnv *env, jclass, 
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_ymir_android_YmirNative_loadBiosFile(JNIEnv *env, jclass, jlong handle, jstring path) {
+Java_com_saturn_1emu_android_YmirNative_loadBiosFile(JNIEnv *env, jclass, jlong handle, jstring path) {
     auto *runtime = FromHandle(handle);
     if (runtime == nullptr || path == nullptr) {
         return ToJString(env, "BIOS load failed: runtime not available");
@@ -1782,7 +1782,7 @@ Java_com_ymir_android_YmirNative_loadBiosFile(JNIEnv *env, jclass, jlong handle,
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_ymir_android_YmirNative_loadInternalBackupMemory(JNIEnv *env, jclass, jlong handle,
+Java_com_saturn_1emu_android_YmirNative_loadInternalBackupMemory(JNIEnv *env, jclass, jlong handle,
                                                                           jstring path) {
     auto *runtime = FromHandle(handle);
     if (runtime == nullptr || path == nullptr) {
@@ -1797,7 +1797,7 @@ Java_com_ymir_android_YmirNative_loadInternalBackupMemory(JNIEnv *env, jclass, j
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_ymir_android_YmirNative_saveInternalBackupMemory(JNIEnv *env, jclass, jlong handle) {
+Java_com_saturn_1emu_android_YmirNative_saveInternalBackupMemory(JNIEnv *env, jclass, jlong handle) {
     if (auto *runtime = FromHandle(handle)) {
         return ToJString(env, runtime->SaveInternalBackupMemory());
     }
@@ -1805,7 +1805,7 @@ Java_com_ymir_android_YmirNative_saveInternalBackupMemory(JNIEnv *env, jclass, j
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_ymir_android_YmirNative_loadSmpcPersistentState(JNIEnv *env, jclass, jlong handle,
+Java_com_saturn_1emu_android_YmirNative_loadSmpcPersistentState(JNIEnv *env, jclass, jlong handle,
                                                                          jstring path) {
     auto *runtime = FromHandle(handle);
     if (runtime == nullptr || path == nullptr) {
@@ -1820,7 +1820,7 @@ Java_com_ymir_android_YmirNative_loadSmpcPersistentState(JNIEnv *env, jclass, jl
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_ymir_android_YmirNative_saveSmpcPersistentState(JNIEnv *env, jclass, jlong handle) {
+Java_com_saturn_1emu_android_YmirNative_saveSmpcPersistentState(JNIEnv *env, jclass, jlong handle) {
     if (auto *runtime = FromHandle(handle)) {
         return ToJString(env, runtime->SaveSmpcPersistentState());
     }
@@ -1828,7 +1828,7 @@ Java_com_ymir_android_YmirNative_saveSmpcPersistentState(JNIEnv *env, jclass, jl
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_ymir_android_YmirNative_loadGameFile(JNIEnv *env, jclass, jlong handle, jstring path) {
+Java_com_saturn_1emu_android_YmirNative_loadGameFile(JNIEnv *env, jclass, jlong handle, jstring path) {
     auto *runtime = FromHandle(handle);
     if (runtime == nullptr || path == nullptr) {
         return ToJString(env, "Game load failed: runtime not available");
@@ -1842,7 +1842,7 @@ Java_com_ymir_android_YmirNative_loadGameFile(JNIEnv *env, jclass, jlong handle,
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_setGamesFolderUri(JNIEnv *env, jclass, jlong handle, jstring uri) {
+Java_com_saturn_1emu_android_YmirNative_setGamesFolderUri(JNIEnv *env, jclass, jlong handle, jstring uri) {
     auto *runtime = FromHandle(handle);
     if (runtime == nullptr || uri == nullptr) {
         return;
@@ -1855,7 +1855,7 @@ Java_com_ymir_android_YmirNative_setGamesFolderUri(JNIEnv *env, jclass, jlong ha
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_setPadButton(JNIEnv *, jclass, jlong handle, jint button,
+Java_com_saturn_1emu_android_YmirNative_setPadButton(JNIEnv *, jclass, jlong handle, jint button,
                                                               jboolean pressed) {
     if (auto *runtime = FromHandle(handle)) {
         runtime->SetPadButton(static_cast<PadButton>(button), pressed == JNI_TRUE);
@@ -1863,14 +1863,14 @@ Java_com_ymir_android_YmirNative_setPadButton(JNIEnv *, jclass, jlong handle, ji
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_reset(JNIEnv *, jclass, jlong handle) {
+Java_com_saturn_1emu_android_YmirNative_reset(JNIEnv *, jclass, jlong handle) {
     if (auto *runtime = FromHandle(handle)) {
         runtime->Reset();
     }
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_ymir_android_YmirNative_runFrame(JNIEnv *, jclass, jlong handle) {
+Java_com_saturn_1emu_android_YmirNative_runFrame(JNIEnv *, jclass, jlong handle) {
     if (auto *runtime = FromHandle(handle)) {
         return runtime->RunFrame() ? JNI_TRUE : JNI_FALSE;
     }
@@ -1878,21 +1878,21 @@ Java_com_ymir_android_YmirNative_runFrame(JNIEnv *, jclass, jlong handle) {
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_start(JNIEnv *, jclass, jlong handle) {
+Java_com_saturn_1emu_android_YmirNative_start(JNIEnv *, jclass, jlong handle) {
     if (auto *runtime = FromHandle(handle)) {
         runtime->Start();
     }
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_ymir_android_YmirNative_stop(JNIEnv *, jclass, jlong handle) {
+Java_com_saturn_1emu_android_YmirNative_stop(JNIEnv *, jclass, jlong handle) {
     if (auto *runtime = FromHandle(handle)) {
         runtime->Stop();
     }
 }
 
 extern "C" JNIEXPORT jdouble JNICALL
-Java_com_ymir_android_YmirNative_fps(JNIEnv *, jclass, jlong handle) {
+Java_com_saturn_1emu_android_YmirNative_fps(JNIEnv *, jclass, jlong handle) {
     if (auto *runtime = FromHandle(handle)) {
         return runtime->GetFps();
     }
@@ -1900,7 +1900,7 @@ Java_com_ymir_android_YmirNative_fps(JNIEnv *, jclass, jlong handle) {
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_ymir_android_YmirNative_status(JNIEnv *env, jclass, jlong handle) {
+Java_com_saturn_1emu_android_YmirNative_status(JNIEnv *env, jclass, jlong handle) {
     if (auto *runtime = FromHandle(handle)) {
         return ToJString(env, runtime->Status());
     }

@@ -1,4 +1,4 @@
-package com.ymir.android;
+package com.saturn_emu.android;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;

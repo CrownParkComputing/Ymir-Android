@@ -32,7 +32,7 @@ def releaseSigning = [
 def hasReleaseSigning = releaseSigning.values().every { it != null && !it.isBlank() }
 
 android {
-    namespace = "com.ymir.android"
+    namespace = "com.saturn_emu.android"
     compileSdk = rootProject.ext.compileSdkVersion
     ndkVersion = rootProject.ext.ndkVersion
 
@@ -48,7 +48,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.ymir.android"
+        applicationId = "com.saturn_emu.android"
         minSdk = rootProject.ext.minSdkVersion
         targetSdk = rootProject.ext.targetSdkVersion
         versionCode = 1

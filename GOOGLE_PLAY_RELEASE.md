@@ -44,7 +44,7 @@ folders so release credentials do not get committed.
 The service account behind `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` must have access
 to the app in Play Console. The package name uploaded by the workflow is:
 
-`com.ymir.android`
+`com.saturn_emu.android`
 
 The app must already exist in Play Console before the automated upload can
 publish to a track. For first-time releases, use the internal track first.
