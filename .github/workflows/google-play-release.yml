@@ -75,7 +75,9 @@ jobs:
           set +o pipefail
           yes | sdkmanager --licenses
           set -o pipefail
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865" "cmake;3.22.1"
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+          cmake --version
+          printf 'sdk.dir=%s\ncmake.dir=/usr\n' "$ANDROID_HOME" > android/local.properties
 
       - name: Decode release keystore
         shell: bash
