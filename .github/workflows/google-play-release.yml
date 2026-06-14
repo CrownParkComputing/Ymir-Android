@@ -77,7 +77,9 @@ jobs:
           set -o pipefail
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
           cmake --version
-          printf 'sdk.dir=%s\ncmake.dir=/usr\n' "$ANDROID_HOME" > android/local.properties
+          CMAKE_BIN=$(command -v cmake)
+          CMAKE_DIR=$(dirname "$(dirname "$CMAKE_BIN")")
+          printf 'sdk.dir=%s\ncmake.dir=%s\n' "$ANDROID_HOME" "$CMAKE_DIR" > android/local.properties
 
       - name: Decode release keystore
         shell: bash
