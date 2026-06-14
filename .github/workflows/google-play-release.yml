@@ -28,6 +28,11 @@ on:
         type: string
         default: Ymir Android 1
         required: true
+      publish_to_play:
+        description: Upload the signed AAB to Google Play after building
+        type: boolean
+        default: false
+        required: true
       changes_not_sent_for_review:
         description: Leave Play Console changes unsubmitted for review
         type: boolean
@@ -92,6 +97,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish to Google Play
+        if: ${{ inputs.publish_to_play }}
         uses: r0adkll/upload-google-play@v1.1.5
         with:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
