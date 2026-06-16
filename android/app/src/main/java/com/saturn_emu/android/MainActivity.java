@@ -6,6 +6,8 @@ import android.app.AlertDialog;
 import android.content.SharedPreferences;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -24,6 +26,7 @@ import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.view.WindowManager;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 import android.widget.Button;
@@ -38,6 +41,7 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.ArrayAdapter;
 import android.widget.TextView;
+import android.widget.Toast;
 import android.database.Cursor;
 
 import java.io.File;
@@ -59,19 +63,28 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_IMPORT_VULKAN_DRIVER = 1001;
     private static final int REQUEST_IMPORT_BIOS = 1002;
     private static final int REQUEST_PICK_GAMES_FOLDER = 1003;
-    private static final String PREFS_NAME = "ymir_android";
-    private static final String PREF_BIOS_PATH = "bios_path";
-    private static final String PREF_GAMES_FOLDER_URI = "games_folder_uri";
+    private static final int REQUEST_PICK_APP_FOLDER = 1004;
+    static final String PREFS_NAME = "ymir_android";
+    static final String PREF_SETUP_COMPLETED = "setup_completed";
+    static final String PREF_APP_STORAGE_ROOT = "app_storage_root";
+    static final String PREF_BIOS_PATH = "bios_path";
+    static final String PREF_GAMES_FOLDER_URI = "games_folder_uri";
     private static final String PREF_GAME_PATH = "game_path";
     private static final String PREF_GAME_DISPLAY_NAME = "game_display_name";
     private static final String PREF_GAME_BEZEL_PREFIX = "game_bezel_uri_";
     private static final String PREF_GAME_IGDB_PREFIX = "game_igdb_json_";
     private static final String PREF_GAME_IGDB_CHECKED_PREFIX = "game_igdb_checked_";
     private static final String PREF_TOUCH_PAD_VISIBLE = "touch_pad_visible";
+    private static final String PREF_VIEW_STYLE = "view_style";
+    private static final int VIEW_STYLE_GRID_SMALL = 0;
+    private static final int VIEW_STYLE_GRID_MEDIUM = 1;
+    private static final int VIEW_STYLE_GRID_LARGE = 2;
+    private static final int VIEW_STYLE_CAROUSEL = 3;
     private static final String PREF_RENDERER_BACKEND = "renderer_backend";
     private static final String PREF_ASPECT_MODE = "aspect_mode";
     private static final String PREF_BEZEL_VISIBLE = "bezel_visible";
     private static final String PREF_CRT_ENABLED = "crt_enabled";
+    private static final String PREF_BEZEL_GITHUB_URL = "bezel_github_url";
 
     private static final int ASPECT_4_3 = 0;
     private static final int ASPECT_16_9 = 1;
@@ -97,6 +110,19 @@ public final class MainActivity extends Activity {
     private TextView fpsView;
     private View settingsPanel;
     private View touchPadOverlay;
+    private View mapperOverlay;
+    private final java.util.LinkedHashMap<Integer, Button> mapperHotspots = new java.util.LinkedHashMap<>();
+    private DpadView editorDpad;
+    private TextView mapperStatusText;
+    private Button padShowHideButton;
+    private Button padEditButton;
+    private int mapperWaitingForButton = -1;
+    private final List<View> padButtons = new ArrayList<>();
+    private final List<PadSpec> padSpecs = new ArrayList<>();
+    private FrameLayout virtualPadContainer;
+    private DpadView dpadView;
+    private TextView padEditBanner;
+    private boolean padEditMode = false;
     private View playBar;
     private View gameLibraryScreen;
     private FrameLayout rootView;
@@ -156,12 +182,13 @@ public final class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        touchPadVisible = prefs.getBoolean(PREF_TOUCH_PAD_VISIBLE, false);
-        rendererBackend = clampRenderer(prefs.getInt(PREF_RENDERER_BACKEND, 0));
-        if (rendererBackend == 2) {
-            rendererBackend = 0;
-            prefs.edit().putInt(PREF_RENDERER_BACKEND, rendererBackend).apply();
+        if (needsSetup()) {
+            startSetupWizard();
+            finish();
+            return;
         }
+        touchPadVisible = prefs.getBoolean(PREF_TOUCH_PAD_VISIBLE, false);
+        rendererBackend = clampRenderer(prefs.getInt(PREF_RENDERER_BACKEND, 2));
         aspectMode = clampAspect(prefs.getInt(PREF_ASPECT_MODE, ASPECT_4_3));
         bezelVisible = prefs.getBoolean(PREF_BEZEL_VISIBLE, false);
         crtEnabled = prefs.getBoolean(PREF_CRT_ENABLED, false);
@@ -241,12 +268,17 @@ public final class MainActivity extends Activity {
     }
 
     private boolean handleBackNavigation() {
+        if (mapperOverlay != null && mapperOverlay.getVisibility() == View.VISIBLE) {
+            closeMapperOverlay();
+            return true;
+        }
         if (gameLibraryScreen != null && gameLibraryScreen.getVisibility() == View.VISIBLE) {
             closeGameLibraryScreen();
             return true;
         }
         if (settingsPanel != null && settingsPanel.getVisibility() == View.VISIBLE) {
             settingsPanel.setVisibility(View.GONE);
+            refreshOverlayPause();
             showPlayBarTemporarily();
             return true;
         }
@@ -348,6 +380,8 @@ public final class MainActivity extends Activity {
         bar.addView(aspectButton);
         topCrtButton = makeCompactButton(crtLabel(), v -> toggleCrt());
         bar.addView(topCrtButton);
+        bezelButton = makeCompactButton(bezelLabel(), v -> toggleBezel());
+        bar.addView(bezelButton);
         bar.addView(makeCompactButton("Pad", v -> toggleTouchPad()));
         bar.addView(makeCompactButton("⚙", v -> toggleSettingsPanel()));
 
@@ -387,11 +421,14 @@ public final class MainActivity extends Activity {
                 0,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 1.0f));
-        settingsHeader.addView(makeCompactButton("X", v -> settingsPanel.setVisibility(View.GONE)));
+        settingsHeader.addView(makeCompactButton("X", v -> { settingsPanel.setVisibility(View.GONE); refreshOverlayPause(); }));
         controls.addView(settingsHeader);
 
-        controls.addView(makeSettingsActionCard("↻", "Rerun Setup Wizard", "Ymir folder and Saturn BIOS", v -> rerunSetupWizard()));
+        controls.addView(makeSettingsActionCard("↻", "Rerun Setup Wizard", "App folder, BIOS, and games", v -> rerunSetupWizard()));
         controls.addView(makeSettingsActionCard("▦", "Game Library", "Browse cards, bezels, and IGDB", v -> openGameLibrary()));
+        controls.addView(makeSettingsActionCard("🎮", "Controller", "Map a gamepad, or set up the touch controls", v -> openControllerScreen()));
+        controls.addView(makeSettingsActionCard("◐", "Bezel", "Show or hide game bezels", v -> toggleBezel()));
+        controls.addView(makeSettingsActionCard("⇩", "Download Bezels", "Pull Saturn bezel pack from GitHub", v -> showDownloadBezelsDialog()));
         controls.addView(makeSettingsActionCard("⇩", "Import Vulkan Driver", "Load a custom Vulkan driver file", v -> openDriverImport()));
         controls.addView(makeSettingsActionCard("ⓘ", "Debug Info", "Show renderer and core status", v -> toggleDebugInfo()));
 
@@ -413,6 +450,12 @@ public final class MainActivity extends Activity {
         gameLibraryScreen = createGameLibraryScreen();
         gameLibraryScreen.setVisibility(View.GONE);
         root.addView(gameLibraryScreen, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+
+        mapperOverlay = createMapperOverlay();
+        mapperOverlay.setVisibility(View.GONE);
+        root.addView(mapperOverlay, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
 
@@ -448,6 +491,7 @@ public final class MainActivity extends Activity {
         gameLibraryViewButton = makeCompactButton("Carousel", v -> toggleGameLibraryView());
         header.addView(gameLibraryViewButton);
         header.addView(makeCompactButton("Refresh", v -> refreshGameLibraryScreen()));
+        header.addView(makeCompactButton("Bezels", v -> showDownloadBezelsDialog()));
         header.addView(makeCompactButton("X", v -> closeGameLibraryScreen()));
         screen.addView(header);
 
@@ -533,47 +577,391 @@ public final class MainActivity extends Activity {
         return overlay;
     }
 
+    // ---- Unified controller + draggable touch pad (ported from 3DO Opera) ----
+
+    private static final int DPAD_ID = -100;
+    private static final int DPAD_SIZE_DP = 150;
+    private static final float DPAD_DEF_CX = 0.12f, DPAD_DEF_CY = 0.70f;
+    private static final int HS_UNASSIGNED = 0, HS_ASSIGNED = 1, HS_SELECTED = 2;
+
+    private static final class PadSpec {
+        final int idx; final String label; final int wDp, hDp; final float defCx, defCy;
+        PadSpec(int idx, String label, int wDp, int hDp, float defCx, float defCy) {
+            this.idx = idx; this.label = label; this.wDp = wDp; this.hDp = hDp;
+            this.defCx = defCx; this.defCy = defCy;
+        }
+    }
+
+    // Individually-tappable buttons (the D-pad is a separate DpadView).
+    private static final PadSpec[] PAD_SPECS = {
+            new PadSpec(PAD_L, "L", 96, 44, 0.10f, 0.22f),
+            new PadSpec(PAD_R, "R", 96, 44, 0.90f, 0.22f),
+            new PadSpec(PAD_START, "Start", 96, 40, 0.50f, 0.92f),
+            new PadSpec(PAD_X, "X", 58, 58, 0.78f, 0.60f),
+            new PadSpec(PAD_Y, "Y", 58, 58, 0.85f, 0.56f),
+            new PadSpec(PAD_Z, "Z", 58, 58, 0.92f, 0.52f),
+            new PadSpec(PAD_A, "A", 58, 58, 0.78f, 0.80f),
+            new PadSpec(PAD_B, "B", 58, 58, 0.85f, 0.76f),
+            new PadSpec(PAD_C, "C", 58, 58, 0.92f, 0.72f),
+    };
+
+    private float padDragDownX, padDragDownY;
+    private int padDragStartLeft, padDragStartTop;
+
     private View createTouchPadOverlay() {
         FrameLayout overlay = new FrameLayout(this);
         overlay.setClickable(false);
+        virtualPadContainer = overlay;
 
-        placePadButton(overlay, makePadButton("L", PAD_L, dp(118), dp(42)), Gravity.LEFT | Gravity.TOP,
-                dp(20), dp(58), 0, 0);
-        placePadButton(overlay, makePadButton("R", PAD_R, dp(118), dp(42)), Gravity.RIGHT | Gravity.TOP,
-                0, dp(58), dp(20), 0);
+        padButtons.clear();
+        padSpecs.clear();
+        for (PadSpec spec : PAD_SPECS) {
+            Button button = makeVirtualPadButton(spec);
+            overlay.addView(button, new FrameLayout.LayoutParams(
+                    dp(spec.wDp), dp(spec.hDp), Gravity.TOP | Gravity.LEFT));
+            padButtons.add(button);
+            padSpecs.add(spec);
+        }
 
-        int dpadLeft = dp(34);
-        int dpadBottom = dp(38);
-        int pad = dp(52);
-        placePadButton(overlay, makePadButton("↑", PAD_UP, pad, pad), Gravity.LEFT | Gravity.BOTTOM,
-                dpadLeft + pad, 0, 0, dpadBottom + pad);
-        placePadButton(overlay, makePadButton("←", PAD_LEFT, pad, pad), Gravity.LEFT | Gravity.BOTTOM,
-                dpadLeft, 0, 0, dpadBottom);
-        placePadButton(overlay, makePadButton("↓", PAD_DOWN, pad, pad), Gravity.LEFT | Gravity.BOTTOM,
-                dpadLeft + pad, 0, 0, dpadBottom);
-        placePadButton(overlay, makePadButton("→", PAD_RIGHT, pad, pad), Gravity.LEFT | Gravity.BOTTOM,
-                dpadLeft + pad * 2, 0, 0, dpadBottom);
+        dpadView = new DpadView(this);
+        dpadView.setListener((up, down, left, right) -> {
+            YmirNative.setPadButton(nativeHandle, PAD_UP, up);
+            YmirNative.setPadButton(nativeHandle, PAD_DOWN, down);
+            YmirNative.setPadButton(nativeHandle, PAD_LEFT, left);
+            YmirNative.setPadButton(nativeHandle, PAD_RIGHT, right);
+        });
+        PadSpec dpadSpec = new PadSpec(DPAD_ID, "", DPAD_SIZE_DP, DPAD_SIZE_DP, DPAD_DEF_CX, DPAD_DEF_CY);
+        dpadView.setOnTouchListener((view, event) -> padEditMode && handlePadDrag(view, event, dpadSpec));
+        overlay.addView(dpadView, new FrameLayout.LayoutParams(
+                dp(DPAD_SIZE_DP), dp(DPAD_SIZE_DP), Gravity.TOP | Gravity.LEFT));
+        padButtons.add(dpadView);
+        padSpecs.add(dpadSpec);
 
-        placePadButton(overlay, makePadButton("Start", PAD_START, dp(96), dp(38)), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL,
-                0, 0, 0, dp(34));
+        overlay.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if ((r - l) != (or - ol) || (b - t) != (ob - ot)) positionPadButtons();
+        });
 
-        int faceRight = dp(34);
-        int faceBottom = dp(38);
-        int face = dp(56);
-        int gap = dp(8);
-        placePadButton(overlay, makePadButton("X", PAD_X, face, face), Gravity.RIGHT | Gravity.BOTTOM,
-                0, 0, faceRight + (face + gap) * 2, faceBottom + face + gap);
-        placePadButton(overlay, makePadButton("Y", PAD_Y, face, face), Gravity.RIGHT | Gravity.BOTTOM,
-                0, 0, faceRight + face + gap, faceBottom + face + gap + dp(8));
-        placePadButton(overlay, makePadButton("Z", PAD_Z, face, face), Gravity.RIGHT | Gravity.BOTTOM,
-                0, 0, faceRight, faceBottom + face + gap);
-        placePadButton(overlay, makePadButton("A", PAD_A, face, face), Gravity.RIGHT | Gravity.BOTTOM,
-                0, 0, faceRight + (face + gap) * 2, faceBottom);
-        placePadButton(overlay, makePadButton("B", PAD_B, face, face), Gravity.RIGHT | Gravity.BOTTOM,
-                0, 0, faceRight + face + gap, faceBottom + dp(8));
-        placePadButton(overlay, makePadButton("C", PAD_C, face, face), Gravity.RIGHT | Gravity.BOTTOM,
-                0, 0, faceRight, faceBottom);
+        padEditBanner = new TextView(this);
+        padEditBanner.setText("Drag buttons to reposition · tap here when done");
+        padEditBanner.setTextColor(0xFFEAF0F7);
+        padEditBanner.setTextSize(13.0f);
+        padEditBanner.setGravity(Gravity.CENTER);
+        padEditBanner.setBackgroundColor(0xCC1E66B0);
+        padEditBanner.setPadding(dp(12), dp(8), dp(12), dp(8));
+        padEditBanner.setClickable(true);
+        padEditBanner.setOnClickListener(v -> setPadEditMode(false));
+        padEditBanner.setVisibility(View.GONE);
+        overlay.addView(padEditBanner, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP));
         return overlay;
+    }
+
+    private Button makeVirtualPadButton(PadSpec spec) {
+        Button button = makeCompactButton(spec.label, null);
+        button.setTextColor(0xEEFFFFFF);
+        button.setTextSize(spec.hDp >= 54 ? 16.0f : 13.0f);
+        button.setBackground(virtualPadButtonBackground(false));
+        button.setOnTouchListener((view, event) -> {
+            if (padEditMode) return handlePadDrag(view, event, spec);
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                case MotionEvent.ACTION_POINTER_DOWN:
+                    YmirNative.setPadButton(nativeHandle, spec.idx, true);
+                    view.setBackground(virtualPadButtonBackground(true));
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_POINTER_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    YmirNative.setPadButton(nativeHandle, spec.idx, false);
+                    view.setBackground(virtualPadButtonBackground(false));
+                    return true;
+                default:
+                    return true;
+            }
+        });
+        return button;
+    }
+
+    private boolean handlePadDrag(View view, MotionEvent event, PadSpec spec) {
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) view.getLayoutParams();
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                padDragDownX = event.getRawX();
+                padDragDownY = event.getRawY();
+                padDragStartLeft = lp.leftMargin;
+                padDragStartTop = lp.topMargin;
+                view.setBackground(virtualPadButtonBackground(true));
+                return true;
+            case MotionEvent.ACTION_MOVE: {
+                int w = virtualPadContainer.getWidth();
+                int h = virtualPadContainer.getHeight();
+                lp.leftMargin = clamp(padDragStartLeft + (int) (event.getRawX() - padDragDownX), 0, w - view.getWidth());
+                lp.topMargin = clamp(padDragStartTop + (int) (event.getRawY() - padDragDownY), 0, h - view.getHeight());
+                view.setLayoutParams(lp);
+                return true;
+            }
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL: {
+                int w = virtualPadContainer.getWidth();
+                int h = virtualPadContainer.getHeight();
+                if (w > 0 && h > 0) {
+                    prefs.edit()
+                            .putFloat(padPosKey(spec.idx, "cx"), (lp.leftMargin + view.getWidth() / 2f) / w)
+                            .putFloat(padPosKey(spec.idx, "cy"), (lp.topMargin + view.getHeight() / 2f) / h)
+                            .apply();
+                }
+                view.setBackground(virtualPadButtonBackground(false));
+                return true;
+            }
+            default:
+                return true;
+        }
+    }
+
+    private void positionPadButtons() {
+        if (virtualPadContainer == null) return;
+        int w = virtualPadContainer.getWidth();
+        int h = virtualPadContainer.getHeight();
+        if (w <= 0 || h <= 0) return;
+        for (int i = 0; i < padButtons.size(); i++) {
+            View button = padButtons.get(i);
+            PadSpec spec = padSpecs.get(i);
+            float cx = prefs.getFloat(padPosKey(spec.idx, "cx"), spec.defCx);
+            float cy = prefs.getFloat(padPosKey(spec.idx, "cy"), spec.defCy);
+            int bw = dp(spec.wDp), bh = dp(spec.hDp);
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) button.getLayoutParams();
+            lp.leftMargin = clamp(Math.round(cx * w - bw / 2f), 0, w - bw);
+            lp.topMargin = clamp(Math.round(cy * h - bh / 2f), 0, h - bh);
+            button.setLayoutParams(lp);
+        }
+    }
+
+    private static String padPosKey(int idx, String axis) { return "pad_" + axis + "_" + idx; }
+
+    private static int clamp(int v, int lo, int hi) {
+        if (hi < lo) return lo;
+        return v < lo ? lo : (v > hi ? hi : v);
+    }
+
+    private void releasePadButtons() {
+        if (dpadView != null) dpadView.release();
+        for (int b = 0; b < SaturnPadMappingManager.BUTTON_MAX; b++) {
+            YmirNative.setPadButton(nativeHandle, b, false);
+        }
+    }
+
+    private GradientDrawable virtualPadButtonBackground(boolean pressed) {
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.RECTANGLE);
+        d.setCornerRadius(dp(999));
+        d.setColor(pressed ? 0x99C5CBD3 : 0x665F6670);
+        d.setStroke(dp(1), pressed ? 0xEEFFFFFF : 0x99D6DADF);
+        return d;
+    }
+
+    private void togglePadEditMode() {
+        if (!touchPadVisible) toggleTouchPad();
+        boolean entering = !padEditMode;
+        setPadEditMode(entering);
+        if (entering && mapperOverlay != null) mapperOverlay.setVisibility(View.GONE);
+    }
+
+    private void setPadEditMode(boolean enabled) {
+        padEditMode = enabled;
+        if (padEditBanner != null) padEditBanner.setVisibility(enabled ? View.VISIBLE : View.GONE);
+        if (padEditButton != null) padEditButton.setText(enabled ? "Done" : "Edit Layout");
+        if (enabled) releasePadButtons();
+    }
+
+    private void resetPadLayout() {
+        SharedPreferences.Editor e = prefs.edit();
+        for (PadSpec spec : PAD_SPECS) {
+            e.remove(padPosKey(spec.idx, "cx")).remove(padPosKey(spec.idx, "cy"));
+        }
+        e.remove(padPosKey(DPAD_ID, "cx")).remove(padPosKey(DPAD_ID, "cy"));
+        e.apply();
+        positionPadButtons();
+        toast("Touch pad layout reset");
+    }
+
+    // ---- Controller mapper screen (Saturn pad photo + tappable hotspots) -----
+
+    private View createMapperOverlay() {
+        LinearLayout screen = new LinearLayout(this);
+        screen.setOrientation(LinearLayout.VERTICAL);
+        screen.setBackgroundColor(0xFA0B0D10);
+        screen.setClickable(true);
+        screen.setFocusable(true);
+        screen.setPadding(dp(16), dp(12), dp(16), dp(12));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        TextView title = new TextView(this);
+        title.setText("Controller");
+        title.setTextColor(0xFFFFFFFF);
+        title.setTextSize(18.0f);
+        header.addView(title, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
+        header.addView(makeCompactButton("X", v -> closeMapperOverlay()));
+        screen.addView(header);
+
+        mapperStatusText = new TextView(this);
+        mapperStatusText.setTextColor(0xFFC8D0DB);
+        mapperStatusText.setTextSize(13.0f);
+        mapperStatusText.setPadding(0, dp(6), 0, dp(6));
+        screen.addView(mapperStatusText);
+
+        SaturnControllerView diagram = new SaturnControllerView(this);
+        mapperHotspots.clear();
+        for (SaturnControllerView.Hotspot hs : SaturnControllerView.hotspots()) {
+            Button b = makeHotspotButton(hs.shape);
+            b.setTag(hs);
+            mapperHotspots.put(hs.buttonIndex, b);
+            addMapperTouchFeedback(b, hs.buttonIndex);
+            diagram.addView(b);
+        }
+        editorDpad = new DpadView(this);
+        editorDpad.setEditorMode(true);
+        editorDpad.setTag(SaturnControllerView.dpadRegion());
+        editorDpad.setArmTapListener(dir -> {
+            int btn = dir == DpadView.UP ? PAD_UP : dir == DpadView.DOWN ? PAD_DOWN
+                    : dir == DpadView.LEFT ? PAD_LEFT : PAD_RIGHT;
+            mapperWaitingForButton = btn;
+            updateMapperWaitingState();
+            toast("Press a controller button for " + SaturnPadMappingManager.buttonName(btn));
+        });
+        diagram.addView(editorDpad);
+
+        FrameLayout diagramHost = new FrameLayout(this);
+        diagramHost.addView(diagram, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        screen.addView(diagramHost, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f));
+
+        LinearLayout touchRow = new LinearLayout(this);
+        touchRow.setOrientation(LinearLayout.HORIZONTAL);
+        touchRow.setGravity(Gravity.CENTER_VERTICAL);
+        touchRow.setPadding(0, dp(8), 0, 0);
+        TextView touchLabel = new TextView(this);
+        touchLabel.setText("On-screen touch pad");
+        touchLabel.setTextColor(0xFFC8D0DB);
+        touchLabel.setTextSize(13.0f);
+        touchRow.addView(touchLabel, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
+        padShowHideButton = makeCompactButton(touchPadVisible ? "Hide" : "Show", v -> toggleTouchPad());
+        touchRow.addView(padShowHideButton);
+        padEditButton = makeCompactButton("Edit Layout", v -> togglePadEditMode());
+        touchRow.addView(padEditButton);
+        touchRow.addView(makeCompactButton("Reset", v -> resetPadLayout()));
+        screen.addView(touchRow);
+
+        refreshMapperLabels();
+        return screen;
+    }
+
+    private Button makeHotspotButton(SaturnControllerView.Shape shape) {
+        Button b = new Button(this);
+        b.setAllCaps(false);
+        b.setTextColor(0xFFFFFFFF);
+        b.setTextSize(9.0f);
+        b.setPadding(0, 0, 0, 0);
+        b.setBackground(hotspotBackground(shape, HS_UNASSIGNED));
+        return b;
+    }
+
+    private GradientDrawable hotspotBackground(SaturnControllerView.Shape shape, int state) {
+        GradientDrawable d = new GradientDrawable();
+        if (shape == SaturnControllerView.Shape.PILL) {
+            d.setShape(GradientDrawable.RECTANGLE);
+            d.setCornerRadius(dp(999));
+        } else {
+            d.setShape(GradientDrawable.OVAL);
+        }
+        int fill, line;
+        switch (state) {
+            case HS_SELECTED: fill = 0x553BA7FF; line = 0xFF3BA7FF; break;
+            case HS_ASSIGNED: fill = 0x6632D17A; line = 0xFF32D17A; break;
+            default: fill = 0x22FFFFFF; line = 0x55FFFFFF; break;
+        }
+        d.setColor(fill);
+        d.setStroke(dp(state == HS_SELECTED ? 2 : 1), line);
+        return d;
+    }
+
+    private void addMapperTouchFeedback(final Button button, final int buttonIndex) {
+        button.setOnClickListener(v -> {
+            mapperWaitingForButton = buttonIndex;
+            updateMapperWaitingState();
+            toast("Press a controller button for " + SaturnPadMappingManager.buttonName(buttonIndex));
+        });
+    }
+
+    private void refreshMapperLabels() { updateMapperWaitingState(); }
+
+    private void updateMapperWaitingState() {
+        if (mapperStatusText != null) {
+            mapperStatusText.setText(mapperWaitingForButton >= 0
+                    ? "Press a controller button for " + SaturnPadMappingManager.buttonName(mapperWaitingForButton)
+                    : "Tap a button on the pad, then press a controller button to map it.");
+        }
+        for (java.util.Map.Entry<Integer, Button> e : mapperHotspots.entrySet()) {
+            applyHotspotStyle(e.getValue(), e.getKey());
+        }
+        if (editorDpad != null) {
+            editorDpad.setArmState(DpadView.UP, hotspotState(PAD_UP));
+            editorDpad.setArmState(DpadView.DOWN, hotspotState(PAD_DOWN));
+            editorDpad.setArmState(DpadView.LEFT, hotspotState(PAD_LEFT));
+            editorDpad.setArmState(DpadView.RIGHT, hotspotState(PAD_RIGHT));
+            editorDpad.invalidate();
+        }
+    }
+
+    private int hotspotState(int buttonIndex) {
+        if (mapperWaitingForButton == buttonIndex) return HS_SELECTED;
+        return SaturnPadMappingManager.getMappedKeyCode(this, buttonIndex) > 0 ? HS_ASSIGNED : HS_UNASSIGNED;
+    }
+
+    private void applyHotspotStyle(Button button, int buttonIndex) {
+        SaturnControllerView.Shape shape = ((SaturnControllerView.Hotspot) button.getTag()).shape;
+        int keyCode = SaturnPadMappingManager.getMappedKeyCode(this, buttonIndex);
+        button.setBackground(hotspotBackground(shape, hotspotState(buttonIndex)));
+        button.setText(keyCode > 0 ? SaturnPadMappingManager.keyName(keyCode) : "");
+    }
+
+    private boolean isGameControllerEvent(KeyEvent event) {
+        int source = event.getSource();
+        return ((source & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD)
+                || ((source & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK)
+                || ((source & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD);
+    }
+
+    private void openControllerScreen() {
+        if (settingsPanel != null) settingsPanel.setVisibility(View.GONE);
+        if (mapperOverlay != null && mapperOverlay.getVisibility() != View.VISIBLE) toggleMapperOverlay();
+    }
+
+    private void toggleMapperOverlay() {
+        if (mapperOverlay == null) return;
+        if (mapperOverlay.getVisibility() != View.VISIBLE) {
+            mapperOverlay.setVisibility(View.VISIBLE);
+            mapperOverlay.bringToFront();
+            refreshMapperLabels();
+            refreshOverlayPause();
+        } else {
+            closeMapperOverlay();
+        }
+    }
+
+    private void closeMapperOverlay() {
+        if (mapperOverlay == null) return;
+        mapperWaitingForButton = -1;
+        mapperOverlay.setVisibility(View.GONE);
+        refreshOverlayPause();
+    }
+
+    private void toast(String message) {
+        android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_SHORT).show();
     }
 
     private void placePadButton(FrameLayout overlay, Button button, int gravity,
@@ -686,7 +1074,149 @@ public final class MainActivity extends Activity {
     private void toggleSettingsPanel() {
         boolean show = settingsPanel.getVisibility() != View.VISIBLE;
         settingsPanel.setVisibility(show ? View.VISIBLE : View.GONE);
+        refreshOverlayPause();
         showPlayBarTemporarily();
+    }
+
+    /** Pause presentation + audio while any settings/config overlay is open. */
+    private void refreshOverlayPause() {
+        boolean overlay = (settingsPanel != null && settingsPanel.getVisibility() == View.VISIBLE)
+                || (mapperOverlay != null && mapperOverlay.getVisibility() == View.VISIBLE)
+                || (gameLibraryScreen != null && gameLibraryScreen.getVisibility() == View.VISIBLE);
+        if (nativeHandle != 0) {
+            YmirNative.setPresentationPaused(nativeHandle, overlay);
+            YmirNative.setAudioMuted(nativeHandle, overlay);
+        }
+    }
+
+    private void showDownloadBezelsDialog() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(24), dp(12), dp(24), 0);
+        layout.setBackgroundColor(0xFF101418);
+
+        TextView hint = new TextView(this);
+        hint.setText("Download per-game Saturn bezel PNGs into app storage.");
+        hint.setTextColor(0xFFE8EAED);
+        hint.setTextSize(13.0f);
+        layout.addView(hint);
+
+        EditText input = new EditText(this);
+        input.setSingleLine(false);
+        input.setMinLines(2);
+        input.setTextColor(0xFFFFFFFF);
+        input.setHintTextColor(0xFF8C939D);
+        input.setText(prefs.getString(PREF_BEZEL_GITHUB_URL, BezelDownloader.DEFAULT_GITHUB_ZIP_URL));
+        layout.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        new AlertDialog.Builder(this)
+                .setTitle("Download Bezels")
+                .setView(layout)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Download", (dialog, which) -> {
+                    String url = input.getText().toString().trim();
+                    if (url.isEmpty()) {
+                        Toast.makeText(this, "GitHub URL is required", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    prefs.edit().putString(PREF_BEZEL_GITHUB_URL, url).apply();
+                    downloadBezelsFromGithub(url);
+                })
+                .show();
+    }
+
+    private void downloadBezelsFromGithub(String url) {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(24), dp(18), dp(24), dp(8));
+        layout.setBackgroundColor(0xFF101418);
+
+        TextView status = new TextView(this);
+        status.setText("Starting download...");
+        status.setTextColor(0xFFFFFFFF);
+        status.setTextSize(14.0f);
+        layout.addView(status);
+
+        android.widget.ProgressBar progress = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setIndeterminate(true);
+        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(18));
+        progressParams.setMargins(0, dp(14), 0, dp(8));
+        layout.addView(progress, progressParams);
+
+        TextView detail = new TextView(this);
+        detail.setTextColor(0xFFBAC2CC);
+        detail.setTextSize(12.0f);
+        layout.addView(detail);
+
+        AlertDialog progressDialog = new AlertDialog.Builder(this)
+                .setTitle("Downloading Bezels")
+                .setView(layout)
+                .setCancelable(false)
+                .create();
+        progressDialog.setOnShowListener(dialog -> {
+            if (progressDialog.getWindow() != null) {
+                progressDialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            }
+        });
+        progressDialog.show();
+
+        new Thread(() -> {
+            try {
+                BezelDownloader.Result result = BezelDownloader.downloadGithubZip(this, url, (phase, current, total, indeterminate) ->
+                        runOnUiThread(() -> updateBezelDownloadProgress(status, detail, progress, phase, current, total, indeterminate)));
+                runOnUiThread(() -> {
+                    progressDialog.dismiss();
+                    invalidateBezelIndex();
+                    applyBezelForCurrentGame();
+                    renderGameLibraryCards();
+                    Toast.makeText(this, "Downloaded " + result.pngCount + " bezels", Toast.LENGTH_LONG).show();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    progressDialog.dismiss();
+                    Toast.makeText(this, "Bezel download failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                });
+            }
+        }, "ymir-bezel-download").start();
+    }
+
+    private void updateBezelDownloadProgress(TextView status, TextView detail, android.widget.ProgressBar progress,
+                                             String phase, long current, long total, boolean indeterminate) {
+        status.setText(phase);
+        progress.setIndeterminate(indeterminate);
+        if (!indeterminate && total > 0) {
+            progress.setMax((int) Math.min(total, Integer.MAX_VALUE));
+            progress.setProgress((int) Math.min(current, Integer.MAX_VALUE));
+            detail.setText(formatProgressValue(current, total));
+        } else if (current > 0) {
+            detail.setText(formatBytes(current));
+        } else {
+            detail.setText("Working...");
+        }
+    }
+
+    private String formatProgressValue(long current, long total) {
+        if (total <= 0) {
+            return formatBytes(current);
+        }
+        if (total < 2048) {
+            return current + " / " + total;
+        }
+        return formatBytes(current) + " / " + formatBytes(total);
+    }
+
+    private String formatBytes(long bytes) {
+        if (bytes >= 1024L * 1024L) {
+            return String.format(Locale.US, "%.1f MB", bytes / (1024f * 1024f));
+        }
+        if (bytes >= 1024L) {
+            return String.format(Locale.US, "%.1f KB", bytes / 1024f);
+        }
+        return bytes + " B";
     }
 
     private void toggleDebugInfo() {
@@ -702,7 +1232,13 @@ public final class MainActivity extends Activity {
     private void toggleTouchPad() {
         touchPadVisible = !touchPadVisible;
         prefs.edit().putBoolean(PREF_TOUCH_PAD_VISIBLE, touchPadVisible).apply();
+        if (!touchPadVisible) {
+            if (padEditMode) setPadEditMode(false);
+            releasePadButtons();
+        }
         touchPadOverlay.setVisibility(touchPadVisible ? View.VISIBLE : View.GONE);
+        if (touchPadVisible) touchPadOverlay.post(this::positionPadButtons);
+        if (padShowHideButton != null) padShowHideButton.setText(touchPadVisible ? "Hide" : "Show");
     }
 
     private void showPlayBarTemporarily() {
@@ -848,7 +1384,7 @@ public final class MainActivity extends Activity {
             return;
         }
         prefs.edit()
-                .putInt(PREF_RENDERER_BACKEND, rendererBackend == 2 ? 0 : rendererBackend)
+                .putInt(PREF_RENDERER_BACKEND, rendererBackend)
                 .putInt(PREF_ASPECT_MODE, aspectMode)
                 .putBoolean(PREF_BEZEL_VISIBLE, bezelVisible)
                 .putBoolean(PREF_CRT_ENABLED, crtEnabled)
@@ -903,7 +1439,7 @@ public final class MainActivity extends Activity {
     private String rendererLabel() {
         switch (rendererBackend) {
         case 1: return "GL";
-        case 2: return "VK!";
+        case 2: return "VK";
         default: return "SW";
         }
     }
@@ -957,18 +1493,50 @@ public final class MainActivity extends Activity {
         startActivityForResult(intent, REQUEST_PICK_GAMES_FOLDER);
     }
 
+    private void openAppFolderPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+        startActivityForResult(intent, REQUEST_PICK_APP_FOLDER);
+    }
+
     private void rerunSetupWizard() {
-        setupWizardWaitingForFolder = true;
-        if (settingsPanel != null) {
-            settingsPanel.setVisibility(View.GONE);
+        startSetupWizard();
+        finish();
+    }
+
+    private void startSetupWizard() {
+        Intent intent = new Intent(this, SetupWizardActivity.class);
+        startActivity(intent);
+    }
+
+    private boolean needsSetup() {
+        if (!prefs.getBoolean(PREF_SETUP_COMPLETED, false)) {
+            return true;
         }
-        updateStatusBrief("Setup wizard: select your Ymir folder");
-        openGamesFolderPicker();
+
+        String biosPath = prefs.getString(PREF_BIOS_PATH, "");
+        if (biosPath.isEmpty() || !new File(biosPath).isFile()) {
+            return true;
+        }
+
+        String gamesFolder = prefs.getString(PREF_GAMES_FOLDER_URI, "");
+        if (gamesFolder.isEmpty()) {
+            return true;
+        }
+
+        String appRoot = prefs.getString(PREF_APP_STORAGE_ROOT, "");
+        if (appRoot.isEmpty()) {
+            return true;
+        }
+        return !StoragePathUtils.isWritableDirectory(new File(appRoot));
     }
 
     private void openGameLibrary() {
         if (gamesFolderUri == null) {
-            updateStatus("Select the Ymir folder before opening the library");
+            updateStatus("Select the games folder before opening the library");
             openGamesFolderPicker();
             return;
         }
@@ -986,12 +1554,13 @@ public final class MainActivity extends Activity {
         if (gameLibrarySearch != null) {
             gameLibrarySearch.setText("");
         }
+        refreshOverlayPause();
         refreshGameLibraryScreen();
     }
 
     private void refreshGameLibraryScreen() {
         if (gameLibraryStatus != null) {
-            gameLibraryStatus.setText("Scanning Ymir folder...");
+            gameLibraryStatus.setText("Scanning games folder...");
         }
         currentGameLibrary.clear();
         renderGameLibraryCards();
@@ -1005,7 +1574,7 @@ public final class MainActivity extends Activity {
                 renderGameLibraryCards();
                 beginIgdbMatching();
                 if (games.isEmpty()) {
-                    updateStatus("No Saturn disc images found in Ymir folder");
+                    updateStatus("No Saturn disc images found in games folder");
                 }
             });
         }, "YmirGameLibraryScan").start();
@@ -1015,6 +1584,7 @@ public final class MainActivity extends Activity {
         if (gameLibraryScreen != null) {
             gameLibraryScreen.setVisibility(View.GONE);
         }
+        refreshOverlayPause();
         showPlayBarTemporarily();
     }
 
@@ -1022,14 +1592,18 @@ public final class MainActivity extends Activity {
         if (gameLibraryGrid == null || gameLibraryCarousel == null || gameLibraryStatus == null) {
             return;
         }
+        int style = prefs.getInt(PREF_VIEW_STYLE, VIEW_STYLE_GRID_MEDIUM);
+        boolean carousel = style == VIEW_STYLE_CAROUSEL;
+        gameLibraryCarouselMode = carousel;
         gameLibraryGrid.removeAllViews();
         gameLibraryCarousel.removeAllViews();
         if (gameLibraryCarouselScroll != null) {
-            gameLibraryCarouselScroll.setVisibility(gameLibraryCarouselMode ? View.VISIBLE : View.GONE);
+            gameLibraryCarouselScroll.setVisibility(carousel ? View.VISIBLE : View.GONE);
         }
-        gameLibraryGrid.setVisibility(gameLibraryCarouselMode ? View.GONE : View.VISIBLE);
+        gameLibraryGrid.setVisibility(carousel ? View.GONE : View.VISIBLE);
+        if (!carousel) gameLibraryGrid.setColumnCount(gridColumns(style));
         if (gameLibraryViewButton != null) {
-            gameLibraryViewButton.setText(gameLibraryCarouselMode ? "Grid" : "Carousel");
+            gameLibraryViewButton.setText(viewStyleName(style));
         }
 
         String query = gameLibrarySearch == null ? "" : gameLibrarySearch.getText().toString();
@@ -1038,10 +1612,10 @@ public final class MainActivity extends Activity {
             if (!matchesSearch(displayBaseName(game.displayName), query)) {
                 continue;
             }
-            if (gameLibraryCarouselMode) {
-                gameLibraryCarousel.addView(createGameCard(game, true));
+            if (carousel) {
+                gameLibraryCarousel.addView(createGameCard(game, VIEW_STYLE_CAROUSEL));
             } else {
-                gameLibraryGrid.addView(createGameCard(game, false));
+                gameLibraryGrid.addView(createGameCard(game, style));
             }
             shown++;
         }
@@ -1055,22 +1629,50 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /** Cycle Small → Medium → Large → Carousel. */
     private void toggleGameLibraryView() {
-        gameLibraryCarouselMode = !gameLibraryCarouselMode;
+        int style = (prefs.getInt(PREF_VIEW_STYLE, VIEW_STYLE_GRID_MEDIUM) + 1) % 4;
+        prefs.edit().putInt(PREF_VIEW_STYLE, style).apply();
         renderGameLibraryCards();
     }
 
-    private View createGameCard(GameLibraryEntry entry, boolean carousel) {
+    private int gridColumns(int style) {
+        switch (style) {
+            case VIEW_STYLE_GRID_SMALL: return 6;
+            case VIEW_STYLE_GRID_LARGE: return 3;
+            default: return 4;
+        }
+    }
+
+    private String viewStyleName(int style) {
+        switch (style) {
+            case VIEW_STYLE_GRID_SMALL: return "Small";
+            case VIEW_STYLE_GRID_LARGE: return "Large";
+            case VIEW_STYLE_CAROUSEL: return "Carousel";
+            default: return "Medium";
+        }
+    }
+
+    private View createGameCard(GameLibraryEntry entry, int style) {
+        boolean carousel = style == VIEW_STYLE_CAROUSEL;
+        int cardW, cardH, coverH;
+        switch (style) {
+            case VIEW_STYLE_GRID_SMALL:  cardW = 118; cardH = 188; coverH = 132; break;
+            case VIEW_STYLE_GRID_LARGE:  cardW = 224; cardH = 336; coverH = 248; break;
+            case VIEW_STYLE_CAROUSEL:    cardW = 192; cardH = 300; coverH = 228; break;
+            default:                     cardW = 168; cardH = 256; coverH = 184; break; // medium
+        }
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setGravity(Gravity.CENTER_HORIZONTAL);
         card.setPadding(dp(8), dp(8), dp(8), dp(8));
         card.setBackground(cardBackground(0xFF191D22, 0xFF353B44));
-        card.setOnClickListener(v -> loadGameFromLibrary(entry));
+        card.setOnClickListener(v -> showGameDetails(entry));
         card.setOnLongClickListener(v -> {
             showGameDetails(entry);
             return true;
         });
+        card.setLongClickable(true);
 
         FrameLayout coverSlot = new FrameLayout(this);
         coverSlot.setBackground(cardBackground(0xFF262C34, 0xFF404853));
@@ -1093,15 +1695,14 @@ public final class MainActivity extends Activity {
                     FrameLayout.LayoutParams.MATCH_PARENT));
         }
         card.addView(coverSlot, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                carousel ? dp(228) : dp(184)));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(coverH)));
 
         TextView title = new TextView(this);
         title.setText(entry.igdbGame != null && entry.igdbGame.name != null && !entry.igdbGame.name.isBlank()
                 ? entry.igdbGame.name
                 : displayBaseName(entry.displayName));
         title.setTextColor(0xFFFFFFFF);
-        title.setTextSize(12.0f);
+        title.setTextSize(style == VIEW_STYLE_GRID_SMALL ? 10.0f : 12.0f);
         title.setGravity(Gravity.CENTER);
         title.setMaxLines(2);
         title.setPadding(0, dp(4), 0, 0);
@@ -1119,13 +1720,13 @@ public final class MainActivity extends Activity {
                 dp(16)));
 
         if (carousel) {
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(192), dp(300));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(cardW), dp(cardH));
             params.setMargins(dp(8), dp(8), dp(8), dp(8));
             card.setLayoutParams(params);
         } else {
             GridLayout.LayoutParams params = new GridLayout.LayoutParams();
-            params.width = dp(168);
-            params.height = dp(256);
+            params.width = dp(cardW);
+            params.height = dp(cardH);
             params.setMargins(dp(6), dp(6), dp(6), dp(6));
             card.setLayoutParams(params);
         }
@@ -1315,10 +1916,17 @@ public final class MainActivity extends Activity {
         container.setOrientation(LinearLayout.HORIZONTAL);
         int padding = dp(12);
         container.setPadding(padding, padding, padding, padding);
+        container.setBackgroundColor(0xF8101418);
 
         LinearLayout leftColumn = new LinearLayout(this);
         leftColumn.setOrientation(LinearLayout.VERTICAL);
         leftColumn.setPadding(0, 0, dp(10), 0);
+        ScrollView leftScroll = new ScrollView(this);
+        leftScroll.setFillViewport(false);
+        leftScroll.setScrollbarFadingEnabled(false);
+        leftScroll.addView(leftColumn, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT));
 
         LinearLayout rightColumn = new LinearLayout(this);
         rightColumn.setOrientation(LinearLayout.VERTICAL);
@@ -1329,16 +1937,40 @@ public final class MainActivity extends Activity {
         actionRow.setGravity(Gravity.CENTER_VERTICAL);
         actionRow.setPadding(0, 0, 0, dp(8));
         Button loadButton = makeCompactButton("Load", null);
-        Button bezelButton = makeCompactButton(hasBezelMatch(entry) ? "Change Bezel" : "Select Bezel", null);
         actionRow.addView(loadButton, new LinearLayout.LayoutParams(
                 0,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 1.0f));
-        actionRow.addView(bezelButton, new LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1.0f));
+        Button searchMissingButton = null;
+        if (entry.igdbGame == null) {
+            searchMissingButton = makeCompactButton("Search IGDB", null);
+            LinearLayout.LayoutParams searchMissingParams = new LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1.0f);
+            searchMissingParams.setMargins(dp(8), 0, 0, 0);
+            actionRow.addView(searchMissingButton, searchMissingParams);
+        }
+        Button matchBezelButton = null;
+        if (!hasBezelMatch(entry)) {
+            matchBezelButton = makeCompactButton("Match Bezel", null);
+            LinearLayout.LayoutParams matchParams = new LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1.0f);
+            matchParams.setMargins(dp(8), 0, 0, 0);
+            actionRow.addView(matchBezelButton, matchParams);
+        }
         leftColumn.addView(actionRow, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        TextView bezelStatus = new TextView(this);
+        bezelStatus.setText(describeBezelDiagnostic(entry));
+        bezelStatus.setTextColor(0xFFBAC2CC);
+        bezelStatus.setTextSize(11.0f);
+        bezelStatus.setPadding(0, 0, 0, dp(8));
+        leftColumn.addView(bezelStatus, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
@@ -1346,7 +1978,6 @@ public final class MainActivity extends Activity {
         details.setText(formatIgdbDetails(entry));
         details.setTextColor(0xFFE8EAED);
         details.setTextSize(13.0f);
-        details.setMaxLines(10);
         details.setPadding(0, 0, 0, dp(10));
         leftColumn.addView(details, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1356,6 +1987,8 @@ public final class MainActivity extends Activity {
         search.setSingleLine(true);
         search.setHint("Manual IGDB search");
         search.setText(buildIgdbQueryName(entry.displayName));
+        search.setTextColor(0xFFFFFFFF);
+        search.setHintTextColor(0xFF8C939D);
         search.setSelectAllOnFocus(true);
         leftColumn.addView(search, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1370,13 +2003,26 @@ public final class MainActivity extends Activity {
         ArrayAdapter<String> adapter = new ArrayAdapter<>(
                 this,
                 android.R.layout.simple_list_item_1,
-                new ArrayList<>());
+                new ArrayList<>()) {
+            @Override
+            public View getView(int position, View convertView, android.view.ViewGroup parent) {
+                View row = super.getView(position, convertView, parent);
+                TextView text = row.findViewById(android.R.id.text1);
+                if (text != null) {
+                    text.setTextColor(0xFFE8EAED);
+                    text.setTextSize(13.0f);
+                }
+                row.setBackgroundColor(0xFF101418);
+                return row;
+            }
+        };
         List<IgdbService.IgdbGame> results = new ArrayList<>();
         resultsList.setAdapter(adapter);
+        resultsList.setBackgroundColor(0xFF101418);
+        resultsList.setCacheColorHint(0xFF101418);
         leftColumn.addView(resultsList, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1.0f));
+                dp(180)));
 
         TextView mediaTitle = new TextView(this);
         mediaTitle.setText("Gameplay Images");
@@ -1405,7 +2051,7 @@ public final class MainActivity extends Activity {
         mediaHint.setPadding(0, dp(8), 0, 0);
         rightColumn.addView(mediaHint);
 
-        container.addView(leftColumn, new LinearLayout.LayoutParams(
+        container.addView(leftScroll, new LinearLayout.LayoutParams(
                 0,
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 1.05f));
@@ -1423,7 +2069,6 @@ public final class MainActivity extends Activity {
             dialog.dismiss();
             loadGameFromLibrary(entry);
         });
-        bezelButton.setOnClickListener(v -> openLibraryBezelSelector(entry));
         searchButton.setOnClickListener(v -> {
             if (!igdbService.hasCredentials()) {
                 adapter.clear();
@@ -1449,12 +2094,31 @@ public final class MainActivity extends Activity {
                 adapter.notifyDataSetChanged();
             });
         });
+        Button finalSearchMissingButton = searchMissingButton;
+        if (finalSearchMissingButton != null) {
+            finalSearchMissingButton.setOnClickListener(v -> searchButton.performClick());
+        }
+        Button finalMatchBezelButton = matchBezelButton;
+        if (finalMatchBezelButton != null) {
+            finalMatchBezelButton.setOnClickListener(v -> {
+                dialog.dismiss();
+                openLibraryBezelSelector(entry);
+            });
+        }
         dialog.setOnShowListener(d -> {
-            search.requestFocus();
+            search.clearFocus();
             if (dialog.getWindow() != null) {
+                dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+                dialog.getWindow().setSoftInputMode(
+                        WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
+                                | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
                 dialog.getWindow().setLayout(
                         Math.min(getResources().getDisplayMetrics().widthPixels - dp(24), dp(980)),
                         Math.min(getResources().getDisplayMetrics().heightPixels - dp(24), dp(640)));
+            }
+            Button closeButton = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
+            if (closeButton != null) {
+                closeButton.setTextColor(0xFFFFFFFF);
             }
         });
 
@@ -1480,25 +2144,38 @@ public final class MainActivity extends Activity {
 
     private View wrapGameDetailsWithBezel(GameLibraryEntry entry, View content) {
         Uri bezelUri = findBezelUriForGame(entry);
-        if (bezelUri == null) {
-            return content;
-        }
-
         FrameLayout frame = new FrameLayout(this);
         frame.setBackgroundColor(0xFF050607);
-        ImageView bezel = new ImageView(this);
-        bezel.setImageURI(bezelUri);
-        bezel.setScaleType(ImageView.ScaleType.FIT_XY);
-        frame.addView(bezel, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-
-        content.setBackgroundColor(0xDD101418);
-
         FrameLayout.LayoutParams contentParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT);
-        contentParams.setMargins(dp(92), dp(18), dp(92), dp(18));
+
+        if (bezelUri != null) {
+            ImageView bezel = new ImageView(this);
+            bezel.setImageURI(bezelUri);
+            bezel.setScaleType(ImageView.ScaleType.FIT_XY);
+            frame.addView(bezel, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT));
+            contentParams.setMargins(dp(92), dp(18), dp(92), dp(18));
+            content.setBackgroundColor(0xEA101418);
+        } else {
+            TextView noMatch = new TextView(this);
+            noMatch.setText(describeBezelDiagnostic(entry));
+            noMatch.setTextColor(0xFFFFD166);
+            noMatch.setTextSize(12.0f);
+            noMatch.setGravity(Gravity.CENTER);
+            noMatch.setPadding(dp(10), dp(6), dp(10), dp(6));
+            noMatch.setBackgroundColor(0xCC1B2028);
+            FrameLayout.LayoutParams noMatchParams = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP);
+            frame.addView(noMatch, noMatchParams);
+            contentParams.setMargins(dp(10), dp(38), dp(10), dp(10));
+            content.setBackgroundColor(0xF0101418);
+        }
+
         frame.addView(content, contentParams);
 
         frame.setMinimumHeight(dp(560));
@@ -1508,6 +2185,18 @@ public final class MainActivity extends Activity {
     private Uri findBezelUriForGame(GameLibraryEntry entry) {
         Uri bezelUri = findManualBezelForGame(entry.displayName, "");
         return bezelUri != null ? bezelUri : findBezelForGame(entry.displayName);
+    }
+
+    private String describeBezelDiagnostic(GameLibraryEntry entry) {
+        Uri bezelUri = findBezelUriForGame(entry);
+        String key = normalizeBezelKey(entry.displayName, true);
+        if (bezelUri != null) {
+            return "Matched bezel: " + displayBaseName(bezelUri.getLastPathSegment()) + " | key " + key;
+        }
+        int count = ensureBezelIndexBuilt();
+        return count > 0
+                ? "No bezel match for " + displayBaseName(entry.displayName) + " | key " + key + " | " + count + " indexed"
+                : "No downloaded/indexed bezels | key " + key;
     }
 
     private void populateIgdbMediaStrip(GameLibraryEntry entry, LinearLayout mediaStrip) {
@@ -1572,38 +2261,35 @@ public final class MainActivity extends Activity {
     }
 
     private void openLibraryBezelSelector(GameLibraryEntry entry) {
-        if (bezelFolderUri == null) {
-            updateStatus("Select the Ymir folder before selecting a bezel");
-            return;
-        }
         int count = ensureBezelIndexBuilt();
         if (count == 0 || bezelLibrary.isEmpty()) {
-            updateStatus("No Saturn bezel PNGs found in Ymir folder");
+            updateStatus("No Saturn bezel PNGs found");
+            showDownloadBezelsDialog();
             return;
         }
-        showSearchableBezelDialog(entry.displayName, "", false);
+        showSearchableBezelDialog(entry.displayName, "", false, () -> showGameDetails(entry));
     }
 
     private String formatIgdbDetails(GameLibraryEntry entry) {
         StringBuilder details = new StringBuilder();
-        details.append("File: ").append(entry.displayName);
+        details.append(displayBaseName(entry.displayName));
+        details.append("\n").append(describeBezelDiagnostic(entry));
         if (entry.igdbGame == null) {
             details.append("\nIGDB: no match yet");
-            details.append("\n\nLong-press opened manual matching. Search below to choose a Saturn IGDB result.");
             return details.toString();
         }
 
         IgdbService.IgdbGame game = entry.igdbGame;
         details.append("\nIGDB: ").append(emptyFallback(game.name, "Unknown"));
-        details.append("\nYear: ").append(emptyFallback(game.releaseDate, "Unknown"));
-        details.append("\nPublisher: ").append(emptyFallback(game.publisher, "Unknown"));
-        details.append("\nPlatforms: ");
-        details.append(game.platforms.isEmpty() ? "Sega Saturn" : joinStrings(game.platforms));
-        details.append("\nCover: ").append(game.coverUrl == null || game.coverUrl.isBlank() ? "missing" : "cached/downloadable");
+        if (game.releaseDate != null && !game.releaseDate.isBlank()) {
+            details.append("\nYear: ").append(game.releaseDate);
+        }
+        if (game.publisher != null && !game.publisher.isBlank()) {
+            details.append("\nPublisher: ").append(game.publisher);
+        }
         if (game.summary != null && !game.summary.isBlank()) {
             details.append("\n\n").append(game.summary);
         }
-        details.append("\n\nSearch below to replace this match.");
         return details.toString();
     }
 
@@ -1678,7 +2364,7 @@ public final class MainActivity extends Activity {
             YmirNative.setGamesFolderUri(nativeHandle, value);
             List<GameLibraryEntry> games = scanGameLibrary();
             int count = ensureBezelIndexBuilt();
-            StringBuilder status = new StringBuilder("Ymir folder selected")
+            StringBuilder status = new StringBuilder("Games folder selected")
                     .append("\nFound ").append(games.size()).append(" Saturn disc images")
                     .append("\nIndexed ").append(count).append(" Saturn bezels");
             String applied = applyBezelForCurrentGame();
@@ -1694,6 +2380,23 @@ public final class MainActivity extends Activity {
                     openBiosImport();
                 }, 400);
             }
+            return;
+        }
+        if (requestCode == REQUEST_PICK_APP_FOLDER) {
+            int flags = data.getFlags();
+            if ((flags & Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0) {
+                getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            }
+            if ((flags & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0) {
+                getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            }
+            File appRoot = StoragePathUtils.fileForTreeUri(uri);
+            if (!StoragePathUtils.isWritableDirectory(appRoot)) {
+                updateStatus("Select a writable app folder");
+                return;
+            }
+            prefs.edit().putString(PREF_APP_STORAGE_ROOT, appRoot.getAbsolutePath()).apply();
+            updateStatus("App folder selected: " + appRoot.getAbsolutePath());
             return;
         }
         try {
@@ -1727,7 +2430,7 @@ public final class MainActivity extends Activity {
     }
 
     private File importFile(Uri uri, String directoryName, String fallbackName) throws Exception {
-        File dir = new File(getFilesDir(), directoryName);
+        File dir = new File(getAppStorageRoot(), directoryName);
         if (!dir.exists() && !dir.mkdirs()) {
             throw new IllegalStateException("Could not create " + directoryName + " directory");
         }
@@ -1809,7 +2512,19 @@ public final class MainActivity extends Activity {
         }
 
         games.sort(Comparator.comparing(entry -> entry.displayName.toLowerCase(Locale.US)));
-        return games;
+        // Collapse duplicates that differ only by name sanitisation — playing a
+        // game copies it back into this folder under a sanitised filename, which
+        // would otherwise show up as a second entry. Region/version variants keep
+        // distinct normalized keys, so they are preserved.
+        Set<String> seenKeys = new HashSet<>();
+        List<GameLibraryEntry> deduped = new ArrayList<>();
+        for (GameLibraryEntry entry : games) {
+            String key = normalizeBezelKey(entry.displayName, false);
+            if (key.isEmpty() || seenKeys.add(key)) {
+                deduped.add(entry);
+            }
+        }
+        return deduped;
     }
 
     private boolean isSaturnDiscImage(String name) {
@@ -1823,11 +2538,27 @@ public final class MainActivity extends Activity {
 
     private void loadGameFromLibrary(GameLibraryEntry entry) {
         try {
-            File gameFile = importFile(entry.uri, "games", entry.displayName);
+            // Play the game where it is — only fall back to copying into app
+            // storage when the real path isn't directly readable (e.g. the games
+            // live on shared storage we can't access by raw path).
+            File realFile = StoragePathUtils.fileForDocumentUri(entry.uri);
+            File gameFile = (realFile != null && realFile.canRead())
+                    ? realFile
+                    : importFile(entry.uri, "games", entry.displayName);
             prefs.edit()
                     .putString(PREF_GAME_PATH, gameFile.getAbsolutePath())
                     .putString(PREF_GAME_DISPLAY_NAME, entry.displayName)
                     .apply();
+            // Close overlays and resume the core BEFORE swapping games — reloading
+            // the core while presentation is paused (overlay pause) crashes the
+            // renderer.
+            if (gameLibraryScreen != null) gameLibraryScreen.setVisibility(View.GONE);
+            if (settingsPanel != null) settingsPanel.setVisibility(View.GONE);
+            if (mapperOverlay != null) mapperOverlay.setVisibility(View.GONE);
+            if (nativeHandle != 0) {
+                YmirNative.setPresentationPaused(nativeHandle, false);
+                YmirNative.setAudioMuted(nativeHandle, false);
+            }
             YmirNative.stop(nativeHandle);
             String result = YmirNative.loadGameFile(nativeHandle, gameFile.getAbsolutePath());
             StringBuilder status = new StringBuilder(result);
@@ -1838,10 +2569,6 @@ public final class MainActivity extends Activity {
             }
             updateStatus(status.toString());
             YmirNative.start(nativeHandle);
-            if (gameLibraryScreen != null) {
-                gameLibraryScreen.setVisibility(View.GONE);
-            }
-            settingsPanel.setVisibility(View.GONE);
         } catch (Exception e) {
             updateStatus("Game load failed: " + e.getMessage());
         }
@@ -1881,13 +2608,13 @@ public final class MainActivity extends Activity {
             return;
         }
         if (bezelFolderUri == null) {
-            updateStatus("Select the Ymir folder before selecting a bezel");
+            updateStatus("Select the app folder before selecting a bezel");
             return;
         }
 
         int count = ensureBezelIndexBuilt();
         if (count == 0 || bezelLibrary.isEmpty()) {
-            updateStatus("No Saturn bezel PNGs found in Ymir folder");
+            updateStatus("No Saturn bezel PNGs found in app folder");
             return;
         }
 
@@ -1895,6 +2622,10 @@ public final class MainActivity extends Activity {
     }
 
     private void showSearchableBezelDialog(String gameDisplayName, String gamePath, boolean applyNow) {
+        showSearchableBezelDialog(gameDisplayName, gamePath, applyNow, null);
+    }
+
+    private void showSearchableBezelDialog(String gameDisplayName, String gamePath, boolean applyNow, Runnable onSelected) {
         LinearLayout container = new LinearLayout(this);
         container.setOrientation(LinearLayout.VERTICAL);
         int padding = dp(12);
@@ -1945,6 +2676,9 @@ public final class MainActivity extends Activity {
         listView.setOnItemClickListener((parent, view, position, id) -> {
             dialog.dismiss();
             applyManualBezel(filtered.get(position), gameDisplayName, gamePath, applyNow);
+            if (onSelected != null) {
+                onSelected.run();
+            }
         });
         search.addTextChangedListener(new TextWatcher() {
             @Override
@@ -2026,7 +2760,7 @@ public final class MainActivity extends Activity {
 
         setDefaultBezelImage();
         if (bezelFolderUri == null) {
-            return "No Ymir folder selected for Saturn bezels";
+            return "No app folder selected for Saturn bezels";
         }
         return "No matching Saturn bezel for: " + displayBaseName(displayName);
     }
@@ -2081,8 +2815,13 @@ public final class MainActivity extends Activity {
         bezelExactIndex.clear();
         bezelLooseIndex.clear();
         bezelLibrary.clear();
+        File downloadedRoot = getDownloadedBezelRoot();
+        if (downloadedRoot != null && downloadedRoot.isDirectory()) {
+            indexBezelImagesFromFileTree(downloadedRoot, 0, new HashSet<>());
+        }
         if (bezelFolderUri == null) {
-            return 0;
+            bezelLibrary.sort(Comparator.comparing(entry -> entry.displayName.toLowerCase(Locale.US)));
+            return bezelExactIndex.size();
         }
 
         File root = fileForTreeUri(bezelFolderUri);
@@ -2148,6 +2887,11 @@ public final class MainActivity extends Activity {
         }
         bezelLibrary.sort(Comparator.comparing(entry -> entry.displayName.toLowerCase(Locale.US)));
         return bezelExactIndex.size();
+    }
+
+    private File getDownloadedBezelRoot() {
+        File appStorage = getAppStorageRoot();
+        return appStorage == null ? null : new File(appStorage, "bezels/github/latest");
     }
 
     private boolean indexBezelImagesFromIndexFile(File bezelRoot) {
@@ -2347,7 +3091,7 @@ public final class MainActivity extends Activity {
             this.gamesFolderUri = Uri.parse(gamesFolderUri);
             bezelFolderUri = this.gamesFolderUri;
             invalidateBezelIndex();
-            status.append("\nYmir folder restored");
+            status.append("\nGames folder restored");
         }
         if (biosLoaded && gameWasSet) {
             if (new File(gamePath).isFile()) {
@@ -2375,7 +3119,7 @@ public final class MainActivity extends Activity {
     }
 
     private void initializeInternalBackupMemory() {
-        File dir = new File(getFilesDir(), "backup");
+        File dir = new File(getAppStorageRoot(), "backup");
         if (!dir.exists() && !dir.mkdirs()) {
             return;
         }
@@ -2383,16 +3127,37 @@ public final class MainActivity extends Activity {
     }
 
     private void initializeSmpcPersistentState() {
-        File dir = new File(getFilesDir(), "backup");
+        File dir = new File(getAppStorageRoot(), "backup");
         if (!dir.exists() && !dir.mkdirs()) {
             return;
         }
         YmirNative.loadSmpcPersistentState(nativeHandle, new File(dir, "smpc.bin").getAbsolutePath());
     }
 
+    private File getAppStorageRoot() {
+        String storedRoot = prefs == null ? "" : prefs.getString(PREF_APP_STORAGE_ROOT, "");
+        File root = storedRoot == null || storedRoot.isEmpty() ? null : new File(storedRoot);
+        if (StoragePathUtils.isWritableDirectory(root)) {
+            return root;
+        }
+        File external = getExternalFilesDir(null);
+        if (StoragePathUtils.isWritableDirectory(external)) {
+            return external;
+        }
+        return getFilesDir();
+    }
+
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        int padButton = mapGamepadKey(event.getKeyCode());
+        // Controller mapper: capture the next gamepad press for the waiting button.
+        if (mapperWaitingForButton >= 0 && event.getAction() == KeyEvent.ACTION_DOWN
+                && isGameControllerEvent(event) && event.getKeyCode() != KeyEvent.KEYCODE_BACK) {
+            SaturnPadMappingManager.assignKeyCode(this, mapperWaitingForButton, event.getKeyCode());
+            mapperWaitingForButton = -1;
+            refreshMapperLabels();
+            return true;
+        }
+        int padButton = SaturnPadMappingManager.getMappedButtonForKeyCode(this, event.getKeyCode());
         if (padButton >= 0) {
             int action = event.getAction();
             if (action == KeyEvent.ACTION_DOWN || action == KeyEvent.ACTION_UP) {

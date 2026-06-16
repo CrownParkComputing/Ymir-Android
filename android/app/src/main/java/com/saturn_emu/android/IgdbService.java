@@ -102,7 +102,7 @@ public final class IgdbService {
                 }
                 List<IgdbGame> games = searchSaturnGamesBlocking(gameName, 10);
 
-                IgdbGame result = games.isEmpty() ? null : games.get(0);
+                IgdbGame result = pickBestMatch(gameName, games);
                 if (result != null) {
                     cacheGame(gameName, result);
                 }
@@ -309,6 +309,40 @@ public final class IgdbService {
         String response = readStream(conn.getInputStream());
         conn.disconnect();
         return response;
+    }
+
+    /**
+     * Pick the result whose title best matches the query rather than blindly
+     * trusting IGDB's first (fuzzy) hit. Rejects weak matches (returns null) so
+     * an unmatched game shows nothing instead of a wrong game's cover/name.
+     */
+    private IgdbGame pickBestMatch(String query, List<IgdbGame> games) {
+        if (games == null || games.isEmpty()) return null;
+        String q = normalizeTitle(query);
+        if (q.isEmpty()) return null;
+        IgdbGame best = null;
+        int bestScore = 0;
+        for (IgdbGame g : games) {
+            if (g == null || g.name == null) continue;
+            String n = normalizeTitle(g.name);
+            if (n.isEmpty()) continue;
+            int score;
+            if (n.equals(q)) score = 100;
+            else if (n.startsWith(q) || q.startsWith(n)) score = 70;
+            else if (n.contains(q) || q.contains(n)) score = 50;
+            else score = 0;
+            if (score > bestScore) { bestScore = score; best = g; }
+        }
+        return bestScore >= 50 ? best : null; // require at least a containment match
+    }
+
+    private String normalizeTitle(String s) {
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = Character.toLowerCase(s.charAt(i));
+            if (Character.isLetterOrDigit(c)) b.append(c);
+        }
+        return b.toString();
     }
 
     private List<IgdbGame> searchSaturnGamesBlocking(String query, int limit) throws Exception {
